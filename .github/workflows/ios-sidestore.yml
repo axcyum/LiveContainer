@@ -1,0 +1,89 @@
+name: iOS Build with SideStore
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sidestore:
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          repository: LiveContainerMirror/SideStore
+          ref: ff25922e5c13ccfafd83bda5092910d848ebd409
+          submodules: recursive
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '26.4'
+      - name: Install signing tool
+        run: brew install ldid
+      - name: Build SideStore for embedding
+        run: |
+          set -o pipefail
+          make build 2>&1 | tee "$RUNNER_TEMP/sidestore-build.log"
+          make fakesign
+          make ipa
+          unzip -t SideStore.ipa
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SideStore-for-embedding
+          path: SideStore.ipa
+          if-no-files-found: error
+      - name: Upload SideStore log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sidestore-build-log
+          path: ${{ runner.temp }}/sidestore-build.log
+
+  package:
+    needs: sidestore
+    runs-on: macos-latest
+    timeout-minutes: 30
+    env:
+      scheme: LiveContainer
+      archive_path: archive
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '26.2'
+      - uses: actions/download-artifact@v4
+        with:
+          name: SideStore-for-embedding
+          path: embedded-sidestore
+      - name: Build Mach-O conversion tool
+        run: python3 .github/build_dylibify.py
+      - name: Archive LiveContainer
+        run: |
+          set -o pipefail
+          xcodebuild archive -project LiveContainer.xcodeproj \
+            -scheme LiveContainer -configuration Release -sdk iphoneos \
+            -destination 'generic/platform=iOS' -archivePath "$archive_path" \
+            CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO DEVELOPMENT_TEAM= \
+            2>&1 | tee "$RUNNER_TEMP/livecontainer-build.log"
+      - name: Embed SideStore and create IPA
+        env:
+          SIDESTORE_IPA_PATH: ${{ github.workspace }}/embedded-sidestore/SideStore.ipa
+        run: |
+          bash -e .github/build_github.sh
+          unzip -t 'LiveContainer+SideStore.ipa'
+          unzip -l 'LiveContainer+SideStore.ipa' | grep 'SideStoreApp.framework/SideStore$'
+          unzip -l 'LiveContainer+SideStore.ipa' | grep 'LiveWidgetExtension.appex/LiveWidgetExtension$'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LiveContainer+SideStore.ipa
+          path: LiveContainer+SideStore.ipa
+          if-no-files-found: error
+      - name: Upload LiveContainer log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: livecontainer-build-log
+          path: ${{ runner.temp }}/livecontainer-build.log
