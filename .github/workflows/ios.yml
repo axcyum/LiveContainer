@@ -1,0 +1,52 @@
+name: iOS IPA Build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '26.2'
+      - name: Archive iOS app
+        run: |
+          set -o pipefail
+          xcodebuild archive \
+            -project LiveContainer.xcodeproj \
+            -scheme LiveContainer \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/LiveContainer.xcarchive" \
+            CODE_SIGN_IDENTITY=- \
+            CODE_SIGNING_REQUIRED=NO \
+            DEVELOPMENT_TEAM= \
+            | tee "$RUNNER_TEMP/xcodebuild.log"
+      - name: Package standalone IPA
+        run: |
+          mkdir -p "$RUNNER_TEMP/ipa/Payload"
+          cp -R "$RUNNER_TEMP/LiveContainer.xcarchive/Products/Applications/LiveContainer.app" "$RUNNER_TEMP/ipa/Payload/"
+          rm -rf "$RUNNER_TEMP/ipa/Payload/LiveContainer.app/Frameworks/SideStoreSupport.framework"
+          cd "$RUNNER_TEMP/ipa"
+          zip -r "$GITHUB_WORKSPACE/LiveContainer.ipa" Payload -x '*/.DS_Store' '*/._*'
+          unzip -t "$GITHUB_WORKSPACE/LiveContainer.ipa"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LiveContainer.ipa
+          path: LiveContainer.ipa
+          if-no-files-found: error
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-log
+          path: ${{ runner.temp }}/xcodebuild.log
